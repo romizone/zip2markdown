@@ -1,0 +1,27 @@
+[project]
+name = "zip2md"
+version = "1.2.0"
+description = "Convert a ZIP of mixed documents (with OCR for images and scanned PDFs) into one Markdown file"
+authors = [
+    { name = "Romi Nur" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "charset-normalizer>=3.5.2",
+    "markitdown[docx,outlook,pptx,xls,xlsx]>=0.1.9",
+    "pillow>=13.0.0",
+    "pymupdf>=2.1",
+    "pymupdf4llm>=2.1",
+]
+
+[project.scripts]
+zip2md = "zip2md.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.31,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.22.3",
+]

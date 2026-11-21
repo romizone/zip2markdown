@@ -1,0 +1,337 @@
+import SwiftUI
+
+struct ContentView: View {
+    @Bindable var model: ConverterModel
+    @State private var dropTargeted = false
+    @State private var showPreview = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    dropZone
+                    if !model.inputs.isEmpty { inputList }
+                    options
+                    outputRow
+                }
+                .padding(20)
+            }
+            .frame(maxHeight: model.phase == .idle ? .infinity : 400)
+
+            if model.phase != .idle {
+                Divider()
+                progressPanel
+            }
+
+            Divider()
+            footer
+        }
+        .frame(minWidth: 620, minHeight: 640)
+        // files can be dropped anywhere in the window, any number at once
+        .dropDestination(for: URL.self) { urls, _ in
+            model.add(urls)
+            return !urls.isEmpty
+        } isTargeted: { dropTargeted = $0 }
+        .sheet(isPresented: $showPreview) { PreviewSheet(url: model.output) }
+    }
+
+    // MARK: Drop zone
+
+    private var dropZone: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "doc.zipper")
+                .font(.system(size: 40, weight: .light))
+                .foregroundStyle(dropTargeted ? Color.accentColor : .secondary)
+            Text(model.inputs.isEmpty
+                 ? "Tarik & lepas file ZIP, folder, atau dokumen ke sini"
+                 : "Tarik & lepas lagi untuk menambah file")
+                .font(.headline)
+            Text("Bisa banyak sekaligus: beberapa ZIP, folder, dan file lepas — semuanya digabung jadi satu Markdown")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Word · PowerPoint · Excel · PDF (termasuk hasil scan) · gambar · teks · CSV · email")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            Button(model.inputs.isEmpty ? "Pilih File…" : "Tambah File…") { model.chooseInputs() }
+                .disabled(model.isRunning)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 26)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(dropTargeted ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+                .foregroundStyle(dropTargeted ? Color.accentColor : Color.secondary.opacity(0.4))
+        )
+    }
+
+    private var inputList: some View {
+        GroupBox {
+            ScrollView {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(model.inputs, id: \.self) { url in
+                    HStack {
+                        Image(systemName: icon(for: url)).foregroundStyle(.secondary).frame(width: 18)
+                        Text(url.lastPathComponent).lineLimit(1).truncationMode(.middle)
+                        Spacer()
+                        Text(url.deletingLastPathComponent().path(percentEncoded: false))
+                            .font(.caption).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.head)
+                            .frame(maxWidth: 220, alignment: .trailing)
+                        Button { model.remove(url) } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain).foregroundStyle(.secondary)
+                            .disabled(model.isRunning)
+                    }
+                }
+            }
+            .padding(4)
+            }
+            .frame(maxHeight: 150)      // a long list scrolls instead of pushing the options away
+        } label: {
+            Text("Input (\(model.inputs.count)) — digabung sesuai urutan ini")
+        }
+    }
+
+    private func icon(for url: URL) -> String {
+        if url.hasDirectoryPath { return "folder" }
+        switch url.pathExtension.lowercased() {
+        case "zip": return "doc.zipper"
+        case "pdf": return "doc.richtext"
+        case "png", "jpg", "jpeg", "heic", "tif", "tiff": return "photo"
+        default: return "doc"
+        }
+    }
+
+    // MARK: Options
+
+    private var options: some View {
+        GroupBox("Opsi OCR") {
+            VStack(alignment: .leading, spacing: 10) {
+                Picker("Bahasa teks", selection: $model.language) {
+                    ForEach(OCRLanguage.allCases) { Text($0.label).tag($0) }
+                }
+                .frame(maxWidth: 320)
+                Toggle("OCR gambar di dalam Word, PowerPoint & PDF", isOn: $model.embeddedOCR)
+                Toggle("Paksa OCR semua halaman PDF (abaikan lapisan teks yang ada)", isOn: $model.forceOCR)
+                Toggle("Mode cepat (akurasi lebih rendah, tanpa deteksi tabel)", isOn: $model.fastOCR)
+                Text("OCR berjalan sepenuhnya di Mac ini dengan Apple Vision — tidak ada file yang dikirim ke internet.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .disabled(model.isRunning)
+    }
+
+    private var outputRow: some View {
+        GroupBox("Hasil") {
+            HStack {
+                Image(systemName: "doc.text").foregroundStyle(.secondary)
+                Text(model.output?.path(percentEncoded: false) ?? "—")
+                    .lineLimit(1).truncationMode(.middle)
+                    .foregroundStyle(model.output == nil ? .secondary : .primary)
+                Spacer()
+                Button("Ubah…") { model.chooseOutput() }
+                    .disabled(model.inputs.isEmpty || model.isRunning)
+            }
+            .padding(6)
+        }
+    }
+
+    // MARK: Progress
+
+    private var progressPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            switch model.phase {
+            case .running:
+                HStack {
+                    Text(model.stage).font(.headline)
+                    Spacer()
+                    if model.total > 0 { Text("\(model.done) / \(model.total)").monospacedDigit().foregroundStyle(.secondary) }
+                }
+                if model.total > 0 {
+                    ProgressView(value: model.progress)
+                } else {
+                    ProgressView().progressViewStyle(.linear)
+                }
+            case .finished:
+                resultBanner
+            case .failed(let msg):
+                Label {
+                    Text(msg).textSelection(.enabled)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+                }
+            case .idle:
+                EmptyView()
+            }
+
+            if !model.log.isEmpty {
+                ScrollViewReader { proxy in
+                    List(model.log) { entry in
+                        LogRow(entry: entry).id(entry.id)
+                    }
+                    .listStyle(.plain)
+                    .frame(minHeight: 120)
+                    .onChange(of: model.log.count) {
+                        if let last = model.log.last { proxy.scrollTo(last.id, anchor: .bottom) }
+                    }
+                }
+            }
+        }
+        .padding(16)
+    }
+
+    private var resultBanner: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Selesai — 1 file Markdown dibuat", systemImage: "checkmark.circle.fill")
+                .font(.headline).foregroundStyle(.green)
+            HStack(spacing: 16) {
+                stat("\(model.summary.converted)", "dikonversi")
+                stat("\(model.summary.ocr)", "dengan OCR")
+                if model.summary.failed > 0 { stat("\(model.summary.failed)", "gagal", .red) }
+                if model.summary.skipped > 0 { stat("\(model.summary.skipped)", "dilewati", .orange) }
+                stat(ByteCountFormatter.string(fromByteCount: Int64(model.summary.bytes), countStyle: .file), "ukuran")
+                stat(String(format: "%.1f dtk", model.summary.seconds), "waktu")
+            }
+            HStack {
+                Button("Buka File") { model.openResult() }.keyboardShortcut("o")
+                Button("Tampilkan di Finder") { model.revealResult() }
+                Button("Pratinjau") { showPreview = true }
+                Button("Salin Isi") { model.copyResult() }
+            }
+        }
+    }
+
+    private func stat(_ value: String, _ label: String, _ color: Color = .primary) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(value).font(.title3.weight(.semibold)).foregroundStyle(color).monospacedDigit()
+            Text(label).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: Footer
+
+    private var footer: some View {
+        HStack {
+            if !model.inputs.isEmpty && !model.isRunning {
+                Button("Kosongkan") { model.clear() }
+            }
+            switch model.engine {
+            case .warming:
+                ProgressView().controlSize(.small)
+                Text("Menyiapkan mesin OCR…").font(.caption).foregroundStyle(.secondary)
+            case .ready:
+                Label("Mesin siap", systemImage: "bolt.fill").font(.caption).foregroundStyle(.secondary)
+            case .unavailable:
+                Label("Mesin konversi tidak ditemukan", systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            Spacer()
+            if model.isRunning {
+                Button("Batal", role: .cancel) { model.cancel() }
+                    .keyboardShortcut(.cancelAction)
+            } else {
+                Button {
+                    model.start()
+                } label: {
+                    Label("Konversi ke Markdown", systemImage: "arrow.right.doc.on.clipboard")
+                        .padding(.horizontal, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .keyboardShortcut(.defaultAction)
+                .disabled(model.inputs.isEmpty || model.output == nil)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+    }
+}
+
+struct LogRow: View {
+    let entry: LogEntry
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: symbol).foregroundStyle(color).frame(width: 16)
+            Text(entry.path).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 8)
+            if let d = entry.detail {
+                Text(d).font(.caption).foregroundStyle(entry.status == .error ? .red : .secondary)
+                    .lineLimit(1).truncationMode(.tail)
+            }
+        }
+        .help(entry.detail ?? entry.path)
+    }
+
+    private var symbol: String {
+        switch entry.status {
+        case .ok: "checkmark.circle"
+        case .ocr: "text.viewfinder"
+        case .error: "xmark.octagon"
+        case .skipped: "minus.circle"
+        case .warning: "exclamationmark.triangle"
+        case .info: "info.circle"
+        }
+    }
+
+    private var color: Color {
+        switch entry.status {
+        case .ok: .green
+        case .ocr: .blue
+        case .error: .red
+        case .skipped: .secondary
+        case .warning: .orange
+        case .info: .secondary
+        }
+    }
+}
+
+struct PreviewSheet: View {
+    let url: URL?
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+    @State private var rendered = true
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(url?.lastPathComponent ?? "").font(.headline)
+                Spacer()
+                Picker("", selection: $rendered) {
+                    Text("Tampilan").tag(true)
+                    Text("Sumber").tag(false)
+                }
+                .pickerStyle(.segmented).frame(width: 180)
+                Button("Tutup") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            .padding(12)
+            Divider()
+            ScrollView {
+                Group {
+                    if rendered {
+                        Text(attributed).textSelection(.enabled)
+                    } else {
+                        Text(text).font(.system(.body, design: .monospaced)).textSelection(.enabled)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
+            }
+        }
+        .frame(minWidth: 720, minHeight: 560)
+        .task {
+            guard let url, let s = try? String(contentsOf: url, encoding: .utf8) else { return }
+            // Keep the preview snappy for very large results.
+            text = s.count > 300_000 ? String(s.prefix(300_000)) + "\n\n… (dipotong untuk pratinjau)" : s
+        }
+    }
+
+    private var attributed: AttributedString {
+        (try? AttributedString(markdown: text, options: .init(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+    }
+}

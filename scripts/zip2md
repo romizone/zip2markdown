@@ -1,0 +1,4 @@
+#!/bin/sh
+# Dev runner: works even when iCloud marks the venv's .pth files as hidden.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHONPATH="$ROOT/engine/src" exec "$ROOT/engine/.venv/bin/python" -m zip2md.cli "$@"
