@@ -73,6 +73,14 @@ BINARY_EXT = {
 }
 
 
+def ram_gb() -> float:
+    """Installed memory in GB (16 if it cannot be read)."""
+    try:
+        return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 2**30
+    except (ValueError, OSError):
+        return 16.0
+
+
 class ConversionError(Exception):
     pass
 
@@ -659,7 +667,8 @@ def kill_children() -> None:
                 pass
 
 _LO_LOCKS = {t: threading.Lock() for t in ("docx", "pptx", "xlsx")}
-_LO_PARALLEL = threading.Semaphore(2)       # LibreOffice sessions at once (~300 MB each)
+# LibreOffice sessions at once (~300 MB each); one at a time on an 8 GB Mac
+_LO_PARALLEL = threading.Semaphore(1 if ram_gb() <= 8 else 2)
 
 
 def _soffice_run(soffice: str, profile: Path, target: str, outdir: Path, files: list[Path],

@@ -294,6 +294,7 @@ struct PreviewSheet: View {
     let url: URL?
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
+    @State private var styled: NSAttributedString?
     @State private var rendered = true
 
     var body: some View {
@@ -310,28 +311,84 @@ struct PreviewSheet: View {
             }
             .padding(12)
             Divider()
-            ScrollView {
-                Group {
-                    if rendered {
-                        Text(attributed).textSelection(.enabled)
-                    } else {
-                        Text(text).font(.system(.body, design: .monospaced)).textSelection(.enabled)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(16)
-            }
+            // NSTextView lays out lazily; a SwiftUI Text of a few hundred KB lays out
+            // everything at once on the main thread and beachballs the app.
+            LargeTextView(text: rendered ? (styled ?? NSAttributedString(string: text, attributes: Self.plain))
+                                         : NSAttributedString(string: text, attributes: Self.mono))
         }
         .frame(minWidth: 720, minHeight: 560)
         .task {
-            guard let url, let s = try? String(contentsOf: url, encoding: .utf8) else { return }
-            // Keep the preview snappy for very large results.
-            text = s.count > 300_000 ? String(s.prefix(300_000)) + "\n\n… (dipotong untuk pratinjau)" : s
+            guard let url else { return }
+            // Reading and Markdown parsing happen off the main thread.
+            let (s, parsed) = await Task.detached(priority: .userInitiated) { () -> (String, AttributedString?) in
+                guard var s = try? String(contentsOf: url, encoding: .utf8) else { return ("", nil) }
+                if s.utf8.count > 2_000_000 {
+                    s = String(s.prefix(1_000_000)) + "\n\n… (dipotong untuk pratinjau)"
+                }
+                return (s, try? AttributedString(markdown: s, options: .init(
+                    interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            }.value
+            text = s
+            styled = parsed.map(Self.styled)
         }
     }
 
-    private var attributed: AttributedString {
-        (try? AttributedString(markdown: text, options: .init(
-            interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+    /// Bold / italic / code from the Markdown, as fonts NSTextView can draw.
+    private static func styled(_ a: AttributedString) -> NSAttributedString {
+        let out = NSMutableAttributedString(string: String(a.characters), attributes: plain)
+        let base = NSFont.systemFont(ofSize: 13)
+        var location = 0
+        for run in a.runs {
+            let length = String(a[run.range].characters).utf16.count
+            defer { location += length }
+            let range = NSRange(location: location, length: length)
+            if let link = run.link { out.addAttribute(.link, value: link, range: range) }
+            guard let intent = run.inlinePresentationIntent else { continue }
+            var font = base
+            if intent.contains(.code) {
+                font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+            } else {
+                var traits: NSFontDescriptor.SymbolicTraits = []
+                if intent.contains(.stronglyEmphasized) { traits.insert(.bold) }
+                if intent.contains(.emphasized) { traits.insert(.italic) }
+                if !traits.isEmpty {
+                    font = NSFont(descriptor: base.fontDescriptor.withSymbolicTraits(traits), size: 13) ?? base
+                }
+            }
+            out.addAttribute(.font, value: font, range: range)
+        }
+        return out
+    }
+
+    private static var plain: [NSAttributedString.Key: Any] {
+        [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.textColor]
+    }
+    private static var mono: [NSAttributedString.Key: Any] {
+        [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), .foregroundColor: NSColor.textColor]
+    }
+}
+
+/// Read-only, selectable text view that stays fast for multi-megabyte documents.
+struct LargeTextView: NSViewRepresentable {
+    let text: NSAttributedString
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        if let tv = scroll.documentView as? NSTextView {
+            tv.isEditable = false
+            tv.isSelectable = true
+            tv.isRichText = true
+            tv.drawsBackground = false
+            tv.textContainerInset = NSSize(width: 16, height: 16)
+            tv.layoutManager?.allowsNonContiguousLayout = true
+        }
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let tv = scroll.documentView as? NSTextView, let storage = tv.textStorage,
+              !storage.isEqual(to: text) else { return }
+        storage.setAttributedString(text)
+        tv.scroll(.zero)
     }
 }

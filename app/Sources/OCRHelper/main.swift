@@ -49,6 +49,18 @@ struct OCRResponse: Encodable {
     var confidence: Double = 0
     var engine: String = ""
     var error: String?
+    var mem_mb: Int = footprintMB()   // lets the engine recycle a worker that grew too big
+}
+
+/// This process's memory footprint (what Activity Monitor shows as "Memory"), in MB.
+func footprintMB() -> Int {
+    var info = rusage_info_v4()
+    let rc = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+            proc_pid_rusage(getpid(), RUSAGE_INFO_V4, $0)
+        }
+    }
+    return rc == 0 ? Int(info.ri_phys_footprint / 1_048_576) : 0
 }
 
 struct OCRResult {
@@ -104,28 +116,26 @@ func loadImage(_ path: String, frame: Int = 0) throws -> (CGImage, CGImageProper
 
 // MARK: - PDF page rendering
 
-/// Recently used PDFs (most recent last). Several PDFs are usually converted at the
-/// same time, so one slot would make every request re-open and re-parse its file.
-nonisolated(unsafe) var openPDFs: [(path: String, doc: CGPDFDocument)] = []
-
+/// Opened fresh for every page, on purpose. A CGPDFDocument keeps every picture it
+/// has decoded for as long as it lives: kept open across requests, one worker grew
+/// from 150 MB to 1.3 GB within 30 scanned pages (measured), and with one worker per
+/// performance core that alone exhausted an 8 GB Mac. Opening is lazy (no page is
+/// parsed), so re-opening costs nothing measurable.
 func pdfDocument(_ path: String) throws -> CGPDFDocument {
-    if let i = openPDFs.firstIndex(where: { $0.path == path }) {
-        let hit = openPDFs.remove(at: i)
-        openPDFs.append(hit)
-        return hit.doc
-    }
     guard let doc = CGPDFDocument(URL(fileURLWithPath: path) as CFURL) else {
         throw OCRError.pdf("cannot open")
     }
     if doc.isEncrypted && !doc.isUnlocked && !doc.unlockWithPassword("") {
         throw OCRError.pdf("password protected")
     }
-    openPDFs.append((path, doc))
-    if openPDFs.count > 4 { openPDFs.removeFirst() }
     return doc
 }
 
 func renderPDFPage(path: String, page: Int, dpi: Double) throws -> CGImage {
+    try autoreleasepool { try renderPDFPageUnpooled(path: path, page: page, dpi: dpi) }
+}
+
+private func renderPDFPageUnpooled(path: String, page: Int, dpi: Double) throws -> CGImage {
     guard let pg = try pdfDocument(path).page(at: page + 1) else { throw OCRError.pdf("no page \(page + 1)") }
     let box = pg.getBoxRect(.cropBox)
     let sideways = pg.rotationAngle % 180 != 0
@@ -406,7 +416,7 @@ func ocr(path: String, langs: [String], fast: Bool, page: Int? = nil, dpi: Doubl
     if let page {
         image = try renderPDFPage(path: path, page: page, dpi: dpi ?? 300)
     } else {
-        (image, orientation) = try loadImage(path, frame: frame ?? 0)
+        (image, orientation) = try autoreleasepool { try loadImage(path, frame: frame ?? 0) }
     }
     if !fast, #available(macOS 26.0, *) {
         let r = try await recognizeDocument(image, orientation, langs: langs)

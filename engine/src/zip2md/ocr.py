@@ -48,6 +48,10 @@ SELFTEST_TIMEOUT = float(os.environ.get("ZIP2MD_OCR_SELFTEST_TIMEOUT", 45))
 FIRST_SELFTEST_TIMEOUT = float(os.environ.get("ZIP2MD_OCR_FIRST_SELFTEST_TIMEOUT", 90))  # may compile
 STABILIZE_BUDGET = float(os.environ.get("ZIP2MD_OCR_STABILIZE", 60))   # waiting for a failing helper
 SELFTEST_EVERY = 25         # pages between two self-tests of the same worker
+# A worker normally stays near 100 MB. One that grows past this (a leak in a system
+# framework, a gigantic image) is retired after its current page and replaced, so
+# memory can never pile up across a long run and push the Mac into swap.
+WORKER_MEM_LIMIT_MB = int(os.environ.get("ZIP2MD_OCR_MEM_LIMIT_MB", 700))
 
 
 @dataclass
@@ -318,12 +322,20 @@ class VisionOCR:
                     raise
             self._failures_in_a_row = 0
             w.served += 1
+            if int(resp.get("mem_mb") or 0) > WORKER_MEM_LIMIT_MB:
+                self._retire(w)
+                w = None                    # a fresh one is started on next use
             if not resp.get("ok"):
                 raise OCRError(resp.get("error") or "OCR gagal")
             return OCRResult(resp.get("markdown", ""), float(resp.get("confidence", 0)),
                              resp.get("engine", "vision"))
         finally:
             self._pool.put(w)
+
+    def _retire(self, w: _Worker) -> None:
+        with self._lock:
+            self._all = [x for x in self._all if x is not w]
+        w.close()
 
     def close(self) -> None:
         with self._lock:

@@ -33,4 +33,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    /// Quitting mid-run must not leave the engine, its OCR workers and LibreOffice
+    /// running in the background.
+    func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            if ConverterModel.shared.isRunning { ConverterModel.shared.cancel() }
+        }
+    }
 }

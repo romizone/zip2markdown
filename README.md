@@ -109,7 +109,14 @@ Ketahanan terhadap error:
 - Halaman PDF yang gagal di-OCR tetap memakai lapisan teks yang ada. Jika helper gagal merender PDF, PyMuPDF jadi cadangan.
 - Halaman dengan keyakinan OCR < 50% diberi peringatan **"periksa hasilnya"** di file hasil (PDF, gambar, dan TIFF).
 - Profil LibreOffice yang rusak dibuang dan konversi diulang dengan profil baru; dua Zip2Markdown yang berjalan bersamaan tidak berebut profil.
-- Tombol Batal mematikan OCR dan LibreOffice yang sedang berjalan, mencegah proses baru dimulai, dan membersihkan folder sementara.
+- Tombol Batal mematikan OCR dan LibreOffice yang sedang berjalan, mencegah proses baru dimulai, dan membersihkan folder sementara. Hal yang sama terjadi jika app ditutup (atau crash) di tengah konversi, sehingga tidak ada proses yang tertinggal memakan RAM.
+
+Ramah terhadap Mac 8 GB:
+
+- **Memori OCR tetap kecil.** Helper membuka PDF baru untuk setiap halaman: `CGPDFDocument` menyimpan semua gambar yang sudah di-decode selama dokumen terbuka, dan satu proses pernah membengkak dari 150 MB ke 1,1–1,3 GB dalam 30 halaman scan. Sekarang tiap proses stabil di sekitar 100 MB. Sebagai jaring pengaman, proses yang melewati 700 MB diganti setelah halaman yang sedang dikerjakan (`ZIP2MD_OCR_MEM_LIMIT_MB`).
+- **Prioritas rendah** (`nice 10`, diwarisi OCR dan LibreOffice): saat Mac sibuk, konversi sedikit lebih lambat, bukan seluruh Mac yang tersendat.
+- Di Mac ≤ 8 GB LibreOffice berjalan **satu sesi sekaligus**.
+- **Pratinjau hasil** memakai `NSTextView` (layout bertahap, parsing di luar main thread), sehingga hasil berukuran besar tidak membuat app beachball.
 
 Catatan: memaksa Vision ke CPU/GPU (`ZIP2MD_OCR_DEVICE=cpu`) memang lepas dari Neural Engine dan sedikit lebih cepat, tetapi akurasinya jatuh pada foto yang sulit (99,6% → 6,6% pada kasus uji), jadi bawaan tetap `auto`.
 

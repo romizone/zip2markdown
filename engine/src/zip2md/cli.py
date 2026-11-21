@@ -13,6 +13,8 @@ import json
 import os
 import signal
 import sys
+import threading
+import time
 from pathlib import Path
 
 from . import __version__
@@ -76,6 +78,30 @@ def warmup() -> int:
     return 0
 
 
+def _lower_priority() -> None:
+    """Run below the apps the user is working in: on a busy Mac the conversion takes
+    a little longer instead of making everything else stutter. The OCR workers and
+    LibreOffice inherit it."""
+    try:
+        os.nice(10)
+    except OSError:
+        pass
+
+
+def _exit_with_parent() -> None:
+    """The app may quit or crash mid-run; without this the engine, its OCR workers
+    and LibreOffice would keep running (and eating memory) with nobody waiting."""
+    parent = os.getppid()
+
+    def watch() -> None:
+        while os.getppid() == parent:
+            time.sleep(1)
+        emergency_cleanup()
+        os._exit(130)
+
+    threading.Thread(target=watch, daemon=True).start()
+
+
 def main(argv: list[str] | None = None) -> int:
     if "--warmup" in (argv if argv is not None else sys.argv[1:]):
         return warmup()
@@ -114,6 +140,9 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGTERM, on_term)
     signal.signal(signal.SIGINT, on_term)
+    _lower_priority()
+    if a.json:                  # started by the app
+        _exit_with_parent()
 
     try:
         run(opts, emit)
