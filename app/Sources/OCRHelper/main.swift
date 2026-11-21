@@ -116,11 +116,12 @@ func loadImage(_ path: String, frame: Int = 0) throws -> (CGImage, CGImageProper
 
 // MARK: - PDF page rendering
 
-/// Opened fresh for every page, on purpose. A CGPDFDocument keeps every picture it
-/// has decoded for as long as it lives: kept open across requests, one worker grew
-/// from 150 MB to 1.3 GB within 30 scanned pages (measured), and with one worker per
-/// performance core that alone exhausted an 8 GB Mac. Opening is lazy (no page is
-/// parsed), so re-opening costs nothing measurable.
+/// Opened fresh for every page, on purpose. A CGPDFDocument holds on to what it has
+/// decoded for as long as it lives: kept open across requests, a worker's footprint
+/// rose from ~100 to ~160 MB within 20 scanned pages; opened per page it stays
+/// ~110 MB (measured with `footprint`). Opening is lazy (no page is parsed), so
+/// re-opening costs nothing measurable. (RSS climbs past 1 GB either way; that is
+/// purgeable cache the system takes back under memory pressure.)
 func pdfDocument(_ path: String) throws -> CGPDFDocument {
     guard let doc = CGPDFDocument(URL(fileURLWithPath: path) as CFURL) else {
         throw OCRError.pdf("cannot open")

@@ -113,7 +113,7 @@ Ketahanan terhadap error:
 
 Ramah terhadap Mac 8 GB:
 
-- **Memori OCR tetap kecil.** Helper membuka PDF baru untuk setiap halaman: `CGPDFDocument` menyimpan semua gambar yang sudah di-decode selama dokumen terbuka, dan satu proses pernah membengkak dari 150 MB ke 1,1–1,3 GB dalam 30 halaman scan. Sekarang tiap proses stabil di sekitar 100 MB. Sebagai jaring pengaman, proses yang melewati 700 MB diganti setelah halaman yang sedang dikerjakan (`ZIP2MD_OCR_MEM_LIMIT_MB`).
+- **Memori OCR tetap kecil.** Helper membuka PDF baru untuk setiap halaman: `CGPDFDocument` menahan data yang sudah di-decode selama dokumen terbuka (footprint satu proses naik dari ±100 ke ±160 MB dalam 20 halaman scan; sekarang stabil ±110 MB). RSS di Activity Monitor tetap bisa terlihat >1 GB per proses; itu cache *purgeable* yang dilepas sistem saat RAM dibutuhkan. Sebagai jaring pengaman, proses yang footprint-nya melewati 700 MB diganti setelah halaman yang sedang dikerjakan (`ZIP2MD_OCR_MEM_LIMIT_MB`).
 - **Prioritas rendah** (`nice 10`, diwarisi OCR dan LibreOffice): saat Mac sibuk, konversi sedikit lebih lambat, bukan seluruh Mac yang tersendat.
 - Di Mac ≤ 8 GB LibreOffice berjalan **satu sesi sekaligus**.
 - **Pratinjau hasil** memakai `NSTextView` (layout bertahap, parsing di luar main thread), sehingga hasil berukuran besar tidak membuat app beachball.
