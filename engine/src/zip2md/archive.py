@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -177,9 +178,11 @@ def _strip_common_top(files: list[SourceFile], skipped: list[Skipped], prefix: s
             sk.display = prefix + sk.display[cut:]
 
 
-def collect(inputs: list[Path], workdir: Path) -> Collection:
+def collect(inputs: list[Path], workdir: Path, labels: dict[str, str] | None = None) -> Collection:
     """Collect every convertible file from ZIPs, folders and loose files.
-    Any mix works: several ZIPs, folders and single documents together."""
+    Any mix works: several ZIPs, folders and single documents together.
+    ``labels`` maps a resolved input path to the name shown for it (pasted text)."""
+    labels = labels or {}
     out = Collection()
     seen: set[Path] = set()
     for n, inp in enumerate(inputs):
@@ -187,6 +190,7 @@ def collect(inputs: list[Path], workdir: Path) -> Collection:
         if inp in seen:                 # the same input given twice
             continue
         seen.add(inp)
+        name = labels.get(str(inp), inp.name)
         first_new = len(out.files)
         if not inp.exists():
             out.skipped.append(Skipped(str(inp), "Tidak ditemukan"))
@@ -199,7 +203,15 @@ def collect(inputs: list[Path], workdir: Path) -> Collection:
                     rel = p.relative_to(inp).as_posix()
                     if is_junk(rel):
                         continue
-                    prefix = f"{inp.name}/" if len(inputs) > 1 else ""
+                    prefix = f"{name}/" if len(inputs) > 1 else ""
+                    try:
+                        st = p.stat()           # follows symlinks: a broken one raises here
+                    except OSError:
+                        out.skipped.append(Skipped(prefix + rel, "Tidak bisa dibaca (symlink rusak?)"))
+                        continue
+                    if not stat.S_ISREG(st.st_mode):    # FIFO, socket, device: reading would hang
+                        out.skipped.append(Skipped(prefix + rel, "Bukan file biasa"))
+                        continue
                     if p.suffix.lower() == ".zip":
                         dest = workdir / f"in{n}" / rel
                         dest.mkdir(parents=True, exist_ok=True)
@@ -208,21 +220,21 @@ def collect(inputs: list[Path], workdir: Path) -> Collection:
                         except ArchiveError as e:
                             out.skipped.append(Skipped(prefix + rel, str(e)))
                     else:
-                        out.files.append(SourceFile(p, prefix + rel, p.stat().st_size))
+                        out.files.append(SourceFile(p, prefix + rel, st.st_size))
         elif inp.suffix.lower() == ".zip":
             dest = workdir / f"in{n}"
             dest.mkdir(parents=True, exist_ok=True)
-            prefix = f"{inp.name} › " if len(inputs) > 1 else ""
+            prefix = f"{name} › " if len(inputs) > 1 else ""
             first_skip = len(out.skipped)
             try:
                 extract_zip(inp, dest, prefix, out)
             except ArchiveError as e:
                 if len(inputs) == 1:
                     raise
-                out.skipped.append(Skipped(inp.name, str(e)))   # the other inputs still convert
+                out.skipped.append(Skipped(name, str(e)))   # the other inputs still convert
             _strip_common_top(out.files[first_new:], out.skipped[first_skip:], prefix)
         else:
-            out.files.append(SourceFile(inp, inp.name, inp.stat().st_size))
+            out.files.append(SourceFile(inp, name, inp.stat().st_size))
         for f in out.files[first_new:]:
             f.group = n
 

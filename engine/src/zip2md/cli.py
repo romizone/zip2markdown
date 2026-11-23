@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from . import __version__
+from .paths import free_output
 from .pipeline import Options, emergency_cleanup, run
 
 
@@ -102,6 +103,21 @@ def _exit_with_parent() -> None:
     threading.Thread(target=watch, daemon=True).start()
 
 
+def _read_labels(path: Path | None) -> dict[str, str]:
+    """Names to show for some inputs, keyed by their resolved path. A bad file only
+    costs the nicer names, never the conversion."""
+    if path is None:
+        return {}
+    try:
+        raw = json.loads(path.expanduser().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(Path(p).expanduser().resolve()): str(name).strip()
+            for p, name in raw.items() if str(name).strip()}
+
+
 def main(argv: list[str] | None = None) -> int:
     if "--warmup" in (argv if argv is not None else sys.argv[1:]):
         return warmup()
@@ -115,17 +131,24 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--workers", type=int, default=min(4, os.cpu_count() or 4))
     ap.add_argument("--ocr-workers", type=int, default=0, help="Jumlah proses OCR (default: otomatis)")
     ap.add_argument("--title", help="Judul dokumen Markdown")
+    ap.add_argument("--labels", type=Path, metavar="JSON",
+                    help='File JSON {"path input": "nama tampilan"} (dipakai app untuk teks tempelan)')
     ap.add_argument("--json", action="store_true", help="Progres dalam format JSON lines (stdout)")
     ap.add_argument("--version", action="version", version=f"zip2md {__version__}")
     a = ap.parse_args(argv)
 
     first = a.inputs[0].expanduser().resolve()
-    output = a.output or first.with_suffix(".md") if first.is_file() else (a.output or first.parent / f"{first.name}.md")
+    if a.output:
+        output = a.output
+    else:
+        default = first.with_suffix(".md") if first.is_file() else first.parent / f"{first.name}.md"
+        output = free_output(default, a.inputs)
     opts = Options(
         inputs=a.inputs, output=output.expanduser().resolve(),
         langs=[l.strip() for l in a.langs.split(",") if l.strip()],
         fast=a.fast, force_ocr=a.force_ocr, ocr_embedded=not a.no_embedded_ocr,
         workers=a.workers, ocr_workers=a.ocr_workers, title=a.title,
+        labels=_read_labels(a.labels),
     )
     emit = _json if a.json else _human
     missing = [str(p) for p in a.inputs if not p.expanduser().exists()]
