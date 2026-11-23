@@ -4,6 +4,7 @@ struct ContentView: View {
     @Bindable var model: ConverterModel
     @State private var dropTargeted = false
     @State private var showPreview = false
+    @State private var draft: PasteDraft?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,6 +34,9 @@ struct ContentView: View {
             return !urls.isEmpty
         } isTargeted: { dropTargeted = $0 }
         .sheet(isPresented: $showPreview) { PreviewSheet(url: model.output) }
+        .sheet(item: $draft) { d in
+            TextDraftSheet(draft: d) { model.save($0) }
+        }
     }
 
     // MARK: Drop zone
@@ -46,14 +50,29 @@ struct ContentView: View {
                  ? "Tarik & lepas file ZIP, folder, atau dokumen ke sini"
                  : "Tarik & lepas lagi untuk menambah file")
                 .font(.headline)
-            Text("Bisa banyak sekaligus: beberapa ZIP, folder, dan file lepas — semuanya digabung jadi satu Markdown")
+            Text("Bisa banyak sekaligus: ZIP, folder, file lepas, dan teks tempelan (⌘V) — semuanya digabung jadi satu Markdown")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
             Text("Word · PowerPoint · Excel · PDF (termasuk hasil scan) · gambar · teks · CSV · email")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
-            Button(model.inputs.isEmpty ? "Pilih File…" : "Tambah File…") { model.chooseInputs() }
-                .disabled(model.isRunning)
+            HStack {
+                Button(model.inputs.isEmpty ? "Pilih File…" : "Tambah File…") { model.chooseInputs() }
+                Button {
+                    if !model.pasteFromClipboard() { NSSound.beep() }
+                } label: {
+                    Label("Tempel", systemImage: "doc.on.clipboard")
+                }
+                .help("Tambahkan isi clipboard (⌘V): teks biasa, teks berformat dari Word/Pages/web, atau file")
+                Button {
+                    draft = model.newDraft()
+                } label: {
+                    Label("Tulis Teks…", systemImage: "square.and.pencil")
+                }
+                .help("Ketik atau tempel teks, lalu beri judul")
+            }
+            .disabled(model.isRunning)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 26)
@@ -73,13 +92,20 @@ struct ContentView: View {
             ScrollView {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(model.inputs, id: \.self) { url in
+                    let pasted = model.isPasted(url)
                     HStack {
                         Image(systemName: icon(for: url)).foregroundStyle(.secondary).frame(width: 18)
-                        Text(url.lastPathComponent).lineLimit(1).truncationMode(.middle)
+                        Text(model.label(for: url)).lineLimit(1).truncationMode(.middle)
                         Spacer()
-                        Text(url.deletingLastPathComponent().path(percentEncoded: false))
+                        Text(pasted ? pastedNote(url) : url.deletingLastPathComponent().path(percentEncoded: false))
                             .font(.caption).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.head)
                             .frame(maxWidth: 220, alignment: .trailing)
+                        if pasted {
+                            Button { draft = model.draft(for: url) } label: { Image(systemName: "pencil.circle") }
+                                .buttonStyle(.plain).foregroundStyle(.secondary)
+                                .help("Ubah judul atau isi")
+                                .disabled(model.isRunning)
+                        }
                         Button { model.remove(url) } label: { Image(systemName: "xmark.circle.fill") }
                             .buttonStyle(.plain).foregroundStyle(.secondary)
                             .disabled(model.isRunning)
@@ -94,7 +120,16 @@ struct ContentView: View {
         }
     }
 
+    private func pastedNote(_ url: URL) -> String {
+        switch PastedStore.kind(of: url) {
+        case .rich: "teks berformat (tempelan)"
+        case .markdown: "Markdown (tempelan)"
+        case .plain: "teks (tempelan)"
+        }
+    }
+
     private func icon(for url: URL) -> String {
+        if model.isPasted(url) { return "doc.on.clipboard" }
         if url.hasDirectoryPath { return "folder" }
         switch url.pathExtension.lowercased() {
         case "zip": return "doc.zipper"
@@ -248,6 +283,47 @@ struct ContentView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
+    }
+}
+
+/// Type or paste text, give it a title; it is merged like any other input.
+struct TextDraftSheet: View {
+    @State var draft: PasteDraft
+    let onSave: (PasteDraft) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(draft.url == nil ? "Tambah teks" : "Ubah teks").font(.headline)
+            TextField("Judul", text: $draft.title, prompt: Text("Judul bagian di hasil Markdown"))
+            if draft.rich {
+                Label("Teks berformat dari Word/Pages/web: judul, daftar, dan tabelnya dipertahankan. "
+                      + "Isinya tidak bisa diubah di sini — hapus lalu tempel ulang untuk menggantinya.",
+                      systemImage: "info.circle")
+                    .font(.callout).foregroundStyle(.secondary)
+            } else {
+                TextEditor(text: $draft.text)
+                    .font(.system(.body, design: draft.markdown ? .monospaced : .default))
+                    .frame(minHeight: 260)
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.3)))
+                Toggle("Teks ini sudah berformat Markdown (judul #, daftar, tabel dipakai apa adanya)",
+                       isOn: $draft.markdown)
+                    .font(.callout)
+            }
+            HStack {
+                Spacer()
+                Button("Batal", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(draft.url == nil ? "Tambahkan" : "Simpan") {
+                    onSave(draft)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!draft.rich && draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 560, minHeight: draft.rich ? 0 : 420)
     }
 }
 

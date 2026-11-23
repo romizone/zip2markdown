@@ -132,6 +132,37 @@ def escape_html_like(text: str) -> str:
     return _TAG_LIKE.sub(r"\\<", text)
 
 
+_FENCE_LINE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+_CODE_SPAN = re.compile(r"(`+)(?:(?!\1).)+?\1")
+_TAG_LIKE_TEXT = re.compile(r"<(?=[A-Za-z/!?])(?!br\s*/?>)", re.I)
+
+
+def escape_html_like_md(md: str) -> str:
+    """``escape_html_like`` for Markdown converted from HTML: a "<" left in it was
+    text in the source ("&lt;isi nama&gt;"), real tags are already converted. Code
+    blocks, code spans and the <br> of table cells are left alone."""
+    out: list[str] = []
+    fence_mark: str | None = None
+    for line in md.split("\n"):
+        m = _FENCE_LINE.match(line)
+        if fence_mark is not None:
+            if m and m.group(1)[0] == fence_mark[0] and len(m.group(1)) >= len(fence_mark):
+                fence_mark = None
+            out.append(line)
+            continue
+        if m:
+            fence_mark = m.group(1)
+            out.append(line)
+            continue
+        parts, last = [], 0
+        for span in _CODE_SPAN.finditer(line):
+            parts += [_TAG_LIKE_TEXT.sub(r"\\<", line[last:span.start()]), span.group(0)]
+            last = span.end()
+        parts.append(_TAG_LIKE_TEXT.sub(r"\\<", line[last:]))
+        out.append("".join(parts))
+    return "\n".join(out)
+
+
 def fence(text: str, lang: str = "") -> str:
     """Wrap text in a code fence that is longer than any backtick run inside it."""
     longest = max((len(m) for m in re.findall(r"`+", text)), default=0)

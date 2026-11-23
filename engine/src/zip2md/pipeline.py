@@ -18,6 +18,7 @@ from .archive import ArchiveError, Skipped, SourceFile, collect
 from .converters import (LEGACY_EXT, Context, ConversionError, Converted, LegacyBatch,
                          Unsupported, convert, kill_children)
 from .ocr import make_ocr
+from .paths import same_file
 
 Emit = Callable[[dict], None]
 
@@ -33,6 +34,11 @@ class Options:
     workers: int = 4
     ocr_workers: int = 0          # 0 = one per performance core
     title: str | None = None
+    # resolved input path -> name shown for it (text pasted in the app has no real file name)
+    labels: dict[str, str] = field(default_factory=dict)
+
+    def name_of(self, p: Path) -> str:
+        return self.labels.get(str(p.expanduser().resolve()), p.name)
 
 
 def default_ocr_workers() -> int:
@@ -87,6 +93,10 @@ def emergency_cleanup() -> None:
 
 
 def run(opts: Options, emit: Emit) -> dict:
+    clash = next((p for p in opts.inputs if same_file(p, opts.output)), None)
+    if clash is not None:       # an explicit -o (or a save panel) pointing at an input
+        raise SystemExit(f"File hasil tidak boleh sama dengan file input: {clash.name}"
+                         " — pilih nama lain untuk hasilnya")
     started = time.time()
     tmp = Path(tempfile.mkdtemp(prefix="zip2md_"))
     _ACTIVE["tmp"] = tmp
@@ -94,7 +104,7 @@ def run(opts: Options, emit: Emit) -> dict:
     try:
         emit({"event": "stage", "stage": "extract", "message": "Mengekstrak arsip…"})
         try:
-            col = collect(opts.inputs, tmp / "src")
+            col = collect(opts.inputs, tmp / "src", opts.labels)
         except ArchiveError as e:
             raise SystemExit(f"Gagal membaca input: {e}")
 
@@ -173,7 +183,7 @@ def run(opts: Options, emit: Emit) -> dict:
                 notes.append(msg)
             emit({"event": "warning", "message": msg})
         emit({"event": "stage", "stage": "assemble", "message": "Menyusun Markdown…"})
-        title = opts.title or (opts.inputs[0].name if len(opts.inputs) == 1 else "Gabungan dokumen")
+        title = opts.title or (opts.name_of(opts.inputs[0]) if len(opts.inputs) == 1 else "Gabungan dokumen")
         md, stats = assemble(title, items, col.skipped, opts, ocr_name, notes)
         stats["seconds"] = round(time.time() - started, 1)
 
@@ -216,7 +226,7 @@ def assemble(title: str, items: list[Item], skipped: list[Skipped], opts: Option
     now = datetime.now().astimezone()
     front = {
         "title": title,
-        "source": [p.name for p in opts.inputs] if len(opts.inputs) > 1 else opts.inputs[0].name,
+        "source": [opts.name_of(p) for p in opts.inputs] if len(opts.inputs) > 1 else opts.name_of(opts.inputs[0]),
         "generated": now.isoformat(timespec="seconds"),
         "generator": f"Zip2Markdown {__version__} (markitdown {mid_ver}; OCR: {ocr_name or 'tidak ada'})",
         "ocr_languages": ",".join(opts.langs),

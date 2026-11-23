@@ -38,6 +38,8 @@ final class ConverterModel {
     enum Phase: Equatable { case idle, running, finished, failed(String) }
 
     var inputs: [URL] = []
+    /// Titles of pasted/typed text inputs (they live in `PastedStore.folder`).
+    var labels: [URL: String] = [:]
     var output: URL?
     var outputIsCustom = false
 
@@ -67,6 +69,7 @@ final class ConverterModel {
         let d = UserDefaults.standard
         if let raw = d.string(forKey: "ocrLanguage"), let l = OCRLanguage(rawValue: raw) { language = l }
         if d.object(forKey: "embeddedOCR") != nil { embeddedOCR = d.bool(forKey: "embeddedOCR") }
+        PastedStore.clearAll()          // left over from an earlier session
         EngineRunner.warmUp { ok in
             Task { @MainActor in ConverterModel.shared.engine = ok ? .ready : .unavailable }
         }
@@ -80,17 +83,22 @@ final class ConverterModel {
     func add(_ urls: [URL]) {
         guard !isRunning else { return }
         for u in urls where !inputs.contains(u) { inputs.append(u) }
-        if !outputIsCustom { output = Self.defaultOutput(for: inputs) }
+        refreshOutput()
         if phase != .running { phase = .idle }
     }
 
     func remove(_ url: URL) {
+        guard !isRunning else { return }
         inputs.removeAll { $0 == url }
-        if !outputIsCustom { output = Self.defaultOutput(for: inputs) }
+        labels[url] = nil
+        PastedStore.delete(url)
+        refreshOutput()
     }
 
     func clear() {
+        for url in inputs { PastedStore.delete(url) }
         inputs = []
+        labels = [:]
         output = nil
         outputIsCustom = false
         phase = .idle
@@ -99,11 +107,108 @@ final class ConverterModel {
         done = 0
     }
 
-    static func defaultOutput(for inputs: [URL]) -> URL? {
+    private func refreshOutput() {
+        if !outputIsCustom { output = Self.defaultOutput(for: inputs, labels: labels) }
+    }
+
+    // MARK: Pasted & typed text
+
+    func isPasted(_ url: URL) -> Bool { PastedStore.contains(url) }
+
+    func label(for url: URL) -> String {
+        labels[url] ?? url.lastPathComponent
+    }
+
+    /// ⌘V or the "Tempel" button: files on the clipboard are added as files; formatted
+    /// text (Word, Pages, web) keeps its headings, lists and tables; plain text stays text.
+    @discardableResult
+    func pasteFromClipboard() -> Bool {
+        guard !isRunning, let clip = PastedStore.readClipboard() else { return false }
+        do {
+            switch clip {
+            case .files(let urls):
+                add(urls)
+            case .rich(let html, let plain):
+                addPasted(try PastedStore.save(html: html), title: PastedStore.title(from: plain, fallback: nextTitle()))
+            case .plain(let text):
+                addPasted(try PastedStore.save(text: text, markdown: false),
+                          title: PastedStore.title(from: text, fallback: nextTitle()))
+            }
+            return true
+        } catch {
+            phase = .failed("Teks tidak bisa disimpan: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    func newDraft() -> PasteDraft {
+        PasteDraft(url: nil, title: nextTitle(), text: "", markdown: false, rich: false)
+    }
+
+    func draft(for url: URL) -> PasteDraft {
+        let kind = PastedStore.kind(of: url)
+        return PasteDraft(url: url, title: label(for: url),
+                          text: kind == .rich ? "" : PastedStore.text(of: url),
+                          markdown: kind == .markdown, rich: kind == .rich)
+    }
+
+    /// Saves the text editor sheet: a new input, or changes to an existing one (same place in the list).
+    func save(_ d: PasteDraft) {
+        guard !isRunning else { return }
+        let title = d.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            if let url = d.url, let i = inputs.firstIndex(of: url) {
+                var target = url
+                if !d.rich { target = try PastedStore.update(url, text: d.text, markdown: d.markdown) }
+                inputs[i] = target
+                labels[url] = nil
+                labels[target] = title.isEmpty ? PastedStore.title(from: d.text, fallback: nextTitle()) : title
+                refreshOutput()
+            } else if !d.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                addPasted(try PastedStore.save(text: d.text, markdown: d.markdown),
+                          title: title.isEmpty ? PastedStore.title(from: d.text, fallback: nextTitle()) : title)
+            }
+        } catch {
+            phase = .failed("Teks tidak bisa disimpan: \(error.localizedDescription)")
+        }
+    }
+
+    private func addPasted(_ url: URL, title: String) {
+        labels[url] = title
+        add([url])
+    }
+
+    private func nextTitle() -> String {
+        "Teks \(inputs.filter(isPasted).count + 1)"
+    }
+
+    static func defaultOutput(for inputs: [URL], labels: [URL: String] = [:]) -> URL? {
         guard let first = inputs.first else { return nil }
-        let base = first.hasDirectoryPath ? first.lastPathComponent : first.deletingPathExtension().lastPathComponent
-        let name = inputs.count > 1 ? "Gabungan dokumen" : base
-        return first.deletingLastPathComponent().appendingPathComponent(name + ".md")
+        let base: String
+        if PastedStore.contains(first) {
+            // a file name from the title: no "/" or ":", which Finder cannot show
+            base = (labels[first] ?? "Teks tempelan")
+                .replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+                .trimmingCharacters(in: CharacterSet(charactersIn: ". …"))
+        } else {
+            base = first.hasDirectoryPath ? first.lastPathComponent : first.deletingPathExtension().lastPathComponent
+        }
+        let name = inputs.count > 1 ? "Gabungan dokumen" : (base.isEmpty ? "Teks tempelan" : base)
+        // Saved next to the first real file; pasted text alone goes to Documents
+        // (never into the app's cache folder, which is emptied).
+        let dir = inputs.first { !PastedStore.contains($0) }?.deletingLastPathComponent()
+            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        // Converting "catatan.md" must never overwrite "catatan.md" itself.
+        // Compared without letter case: APFS volumes usually ignore it.
+        let taken = Set(inputs.map { $0.standardizedFileURL.path.lowercased() })
+        var candidate = dir.appendingPathComponent(name + ".md")
+        var n = 1
+        while taken.contains(candidate.standardizedFileURL.path.lowercased()) {
+            n += 1
+            let suffix = n == 2 ? " (Markdown)" : " (Markdown \(n - 1))"
+            candidate = dir.appendingPathComponent(name + suffix + ".md")
+        }
+        return candidate
     }
 
     func chooseInputs() {
@@ -141,7 +246,7 @@ final class ConverterModel {
         summary = Summary()
 
         let settings = EngineRunner.Settings(
-            inputs: inputs, output: output, langs: language.rawValue,
+            inputs: inputs, labels: labels, output: output, langs: language.rawValue,
             forceOCR: forceOCR, embeddedOCR: embeddedOCR, fast: fastOCR)
         do {
             try runner.start(settings, onEvent: { event in

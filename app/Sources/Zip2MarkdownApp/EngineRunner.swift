@@ -5,6 +5,7 @@ import Foundation
 final class EngineRunner: @unchecked Sendable {
     struct Settings: Sendable {
         var inputs: [URL]
+        var labels: [URL: String]  // names shown for pasted text
         var output: URL
         var langs: String          // "id,en", "" = auto-detect
         var forceOCR: Bool
@@ -89,6 +90,16 @@ final class EngineRunner: @unchecked Sendable {
         }
         var args = prefix + s.inputs.map(\.path)
         args += ["-o", s.output.path, "--json", "--langs", s.langs]
+        // Titles of pasted text go in a JSON file: as arguments a title like "-catatan"
+        // would be taken for an option.
+        let names = Dictionary(s.inputs.compactMap { url in s.labels[url].map { (url.path, $0) } },
+                               uniquingKeysWith: { first, _ in first })
+        if !names.isEmpty {
+            let file = PastedStore.folder.appendingPathComponent("labels.json")
+            try FileManager.default.createDirectory(at: PastedStore.folder, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: names).write(to: file, options: .atomic)
+            args += ["--labels", file.path]
+        }
         if s.forceOCR { args.append("--force-ocr") }
         if !s.embeddedOCR { args.append("--no-embedded-ocr") }
         if s.fast { args.append("--fast") }

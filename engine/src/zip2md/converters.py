@@ -604,11 +604,48 @@ def _office_media_ocr(path: Path, ctx: Context) -> tuple[dict[int, list[str]], l
     return per_slide, loose, conf
 
 
+_WORD_LIST_MARK = re.compile(r"<!\[if !supportLists\]>(.*?)<!\[endif\]>", re.S | re.I)
+_WORD_CONDITION = re.compile(r"<!\[(?:if [^\]]*|endif)\]>", re.I)
+# Glyphs Word writes as list bullets (from the Symbol / Wingdings fonts, or plain ones)
+_WORD_BULLETS = {"·", "o", "§", "Ø", "ü", "•", "▪", "◦", "-", "–"}
+
+
+def _clean_word_html(html: str) -> str:
+    """HTML from Word (copied to the clipboard or saved as .htm) writes each list
+    number or bullet as text inside ``<![if !supportLists]> … <![endif]>``. HTML
+    parsers keep "if !supportLists" and "endif" as words, so a numbered list came
+    out as "if !supportLists1.   endifItem". Keep the marker, drop the wrapper."""
+    def marker(m: re.Match) -> str:
+        import html as html_lib
+        text = html_lib.unescape(re.sub(r"<[^>]+>", "", m.group(1))).replace("\xa0", " ").strip()
+        if not text:
+            return ""
+        return "- " if text in _WORD_BULLETS else text + " "
+    return _WORD_CONDITION.sub("", _WORD_LIST_MARK.sub(marker, html))
+
+
+def _without_word_markup(path: Path, ctx: Context) -> Path:
+    """``path``, or a cleaned UTF-8 copy when it is HTML written by Word."""
+    if path.suffix.lower() not in (".html", ".htm", ".xhtml"):
+        return path
+    try:
+        if b"<![if" not in path.read_bytes():
+            return path
+        text, _ = read_text(path)
+    except (OSError, Unsupported):
+        return path
+    # the copy is UTF-8: its charset declaration must say so, or the parser decodes it wrongly
+    text = re.sub(r"(charset\s*=\s*[\"']?)[\w-]+", r"\1utf-8", _clean_word_html(text), flags=re.I)
+    clean = ctx.tmpfile(path.suffix.lower())
+    clean.write_text(text, encoding="utf-8")
+    return clean
+
+
 def convert_markitdown(path: Path, ctx: Context, kind: str | None = None) -> Converted:
     ext = path.suffix.lower()
     kind = kind or MARKITDOWN_EXT.get(ext, ext.lstrip(".").upper())
     try:
-        res = _markitdown().convert(str(path))
+        res = _markitdown().convert(str(_without_word_markup(path, ctx)))
     except Exception as e:
         if ext in OOXML_EXT and _magic(path).startswith(OLE_MAGIC):
             # a password turns the ZIP-based file into an encrypted OLE container
@@ -616,6 +653,8 @@ def convert_markitdown(path: Path, ctx: Context, kind: str | None = None) -> Con
         raise ConversionError(f"{type(e).__name__}: {str(e)[:300]}") from e
     md = mdutil.strip_local_images(mdutil.strip_data_uri_images(res.markdown or ""))
     md = mdutil.promote_empty_table_headers(md)
+    if ext in (".html", ".htm", ".xhtml"):     # incl. text pasted from Word/web in the app
+        md = mdutil.escape_html_like_md(md)
     if ext in (".xlsx", ".xlsm", ".xls", ".ods", ".xlsb", ".numbers"):
         md = _clean_excel(md)
     method = "markitdown"

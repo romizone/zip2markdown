@@ -25,6 +25,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
         DockPin.pinOnce()       // first launch from /Applications: keep an icon in the Dock
+        installPasteShortcut()
+    }
+
+    /// ⌘V in the main window adds the clipboard as an input. While a text field or the
+    /// text editor sheet has focus, ⌘V keeps its normal meaning.
+    private func installPasteShortcut() {
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                  event.charactersIgnoringModifiers?.lowercased() == "v" else { return event }
+            // local monitors run on the main thread
+            let handled: Bool = MainActor.assumeIsolated {
+                guard let window = NSApp.keyWindow, window.attachedSheet == nil, window.sheetParent == nil,
+                      !(window.firstResponder is NSText) else { return false }
+                if !ConverterModel.shared.pasteFromClipboard() { NSSound.beep() }
+                return true
+            }
+            return handled ? nil : event
+        }
     }
 
     /// Files dropped on the Dock icon or opened with "Open With → Zip2Markdown".

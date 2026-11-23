@@ -25,6 +25,10 @@ LibreOffice (opsional) hanya diperlukan untuk format Office lama: `brew install 
 3. Tarik & lepas ZIP / folder / dokumen ke mana saja di jendela, atau klik **Pilih File…**, atau klik kanan file di Finder → *Open With* → Zip2Markdown.
 4. Klik **Konversi ke Markdown**. Hasil `.md` disimpan di samping file input (bisa diubah lewat **Ubah…**).
 
+**Teks tempelan.** Selain file, teks juga bisa ikut digabung: tekan **⌘V** di jendela (atau klik **Tempel**) untuk menambahkan isi clipboard, atau klik **Tulis Teks…** untuk mengetik/menempel teks dan memberinya judul. Teks yang disalin dari Word, Pages, atau halaman web tetap membawa judul, daftar, dan tabelnya; teks biasa tetap teks biasa (centang *sudah berformat Markdown* bila isinya Markdown). Setiap teks menjadi satu bagian `##` dengan judulnya sendiri, di posisinya dalam daftar input, dan bisa diubah lewat ikon pensil. Kalau inputnya hanya teks tempelan, hasilnya disimpan di folder Dokumen.
+
+Input `.md` tidak pernah tertimpa oleh hasilnya sendiri: hasil untuk `catatan.md` disimpan sebagai `catatan (Markdown).md`.
+
 **Banyak input sekaligus.** Beberapa ZIP, folder, dan file lepas (PDF, Word, Excel, gambar, …) bisa dimasukkan bersamaan — tarik semuanya sekaligus, tarik lagi untuk menambah, atau pilih beberapa di dialog (⌘-klik). Semuanya digabung menjadi satu Markdown (`Gabungan dokumen.md`), berurutan sesuai daftar input; isi tiap ZIP diberi awalan nama ZIP-nya (`arsip.zip › folder/file.pdf`). Satu ZIP yang rusak tidak menggagalkan input lain — ia hanya dicatat di *Laporan pemrosesan*.
 
 > Setelah build/instal baru, macOS mengompilasi model OCR untuk app ini dan memindai library yang dibundel saat pertama kali dimuat (±35 detik, sekali saja). App melakukan pemanasan ini otomatis di latar belakang begitu dibuka: tunggu sampai tulisan di kiri bawah berubah dari **Menyiapkan mesin OCR…** menjadi **Mesin siap**, dan konversi pertama pun langsung cepat.
@@ -38,7 +42,7 @@ scripts/zip2md folder/ file.pdf -o gabungan.md
 dist/Zip2Markdown.app/Contents/Resources/engine/zip2md arsip.zip   # versi yang dibundel
 ```
 
-Opsi: `--langs` (bahasa OCR, default `id,en`; string kosong = deteksi otomatis), `--force-ocr`, `--no-embedded-ocr`, `--fast`, `--title`, `--json` (progres JSON-lines).
+Opsi: `--langs` (bahasa OCR, default `id,en`; string kosong = deteksi otomatis), `--force-ocr`, `--no-embedded-ocr`, `--fast`, `--title`, `--json` (progres JSON-lines), `--labels FILE` (JSON `{"path input": "nama tampilan"}`, dipakai app untuk teks tempelan).
 
 ## Format yang didukung
 
